@@ -1336,7 +1336,7 @@ def sparse_topk_select(
     Designed for the MQA proxy-KV sparse attention path where the dense pass uses
     ``num_kv_heads_dense=1``, so ``max_score.shape[0] == num_kv_heads_real`` and
     each head row is processed independently (no GQA reduction inside this call).
-    Equal scores are selected by increasing logical tile index.
+    Bitwise-equal finite scores are selected by increasing logical tile index.
 
     Parameters
     ----------
