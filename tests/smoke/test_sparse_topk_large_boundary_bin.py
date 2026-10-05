@@ -66,9 +66,9 @@ def test_clustered_boundary_bin_matches_exact_topk(num_valid_pages, center):
     assert torch.equal(result, expected)
 
 
-def test_large_equal_boundary_bin_returns_unique_valid_indices():
-    """A large exact tie must not emit duplicates or padding indices."""
-    num_valid_pages = 1600
+@pytest.mark.parametrize("num_valid_pages", [64, 416, 417, 1600, 2048, 3000])
+def test_equal_boundary_bin_prefers_lower_indices(num_valid_pages):
+    """Rank, merge, and overflow paths break ties by logical block index."""
     scores = torch.full(
         (2, 2, 8192), -float("inf"), device="cuda", dtype=torch.float32
     )
@@ -78,9 +78,8 @@ def test_large_equal_boundary_bin_returns_unique_valid_indices():
         scores, 16, num_valid_pages=num_valid_pages, max_score_layout="THK"
     )
 
-    assert torch.all(result >= 0)
-    assert torch.all(result < num_valid_pages)
-    assert torch.all(result[..., 1:] > result[..., :-1])
+    expected = torch.arange(16, device="cuda", dtype=torch.int32)
+    assert torch.equal(result, expected.expand_as(result))
 
 
 @pytest.mark.parametrize("num_higher_scores", [1, 7, 15])
@@ -118,9 +117,10 @@ def test_large_equal_boundary_bin_with_forced_blocks():
         max_score_layout="THK",
     )
 
-    assert torch.all(result[..., 0] == 0)
-    assert torch.all(result[..., -1] == num_valid_pages - 1)
-    assert torch.all(result[..., 1:] > result[..., :-1])
+    expected = torch.tensor(
+        [*range(15), num_valid_pages - 1], device="cuda", dtype=torch.int32
+    )
+    assert torch.equal(result, expected.expand_as(result))
 
 
 def test_large_boundary_bin_preserves_high_source_indices():
@@ -153,9 +153,20 @@ def test_refined_boundary_bin_returns_unique_top_scores(final_count):
         scores, 16, num_valid_pages=3200, max_score_layout="THK"
     )
 
-    assert torch.all(result >= 0)
-    assert torch.all(result < final_count)
-    assert torch.all(result[..., 1:] > result[..., :-1])
+    expected = torch.arange(16, device="cuda", dtype=torch.int32)
+    assert torch.equal(result, expected.expand_as(result))
+
+
+def test_overflow_boundary_bin_resolves_low_score_bits_before_ties():
+    """The final histogram bin leaves two score bits unresolved."""
+    bits = 0x3F070000 + torch.arange(3200, device="cuda", dtype=torch.int32) % 4
+    scores = bits.view(torch.float32).view(1, 1, -1)
+
+    result = sparse_topk_select(
+        scores, 16, num_valid_pages=3200, max_score_layout="THK"
+    )
+    expected = torch.arange(3, 64, 4, device="cuda", dtype=torch.int32)
+    assert torch.equal(result, expected.view(1, 1, 16))
 
 
 def test_refined_boundary_bin_is_padding_invariant():
