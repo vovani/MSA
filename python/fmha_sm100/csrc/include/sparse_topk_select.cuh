@@ -792,6 +792,7 @@ __global__ void __launch_bounds__(kIndexerNumThreadsPerBlock) IndexerTopKWithSor
   // storage can alias items after every candidate has been packed in registers.
   __shared__ union {
     FinalItems items;
+    uint64_t candidateKeys[kIndexerQuadraticSelectionLimit];
     Histogram histo;
     CandidateWarpSortStorage candidateWarpSort;
     typename CandidateGlobalSort::TempStorage candidateGlobalSort;
@@ -941,19 +942,23 @@ __global__ void __launch_bounds__(kIndexerNumThreadsPerBlock) IndexerTopKWithSor
     const int selectionWarp = threadIdx.x >> 5;
 
     if (finalCount <= kIndexerQuadraticSelectionLimit) {
-      for (int i = threadIdx.x; i < finalCount; i += kNumThreadsPerBlock) {
+      static_assert(kIndexerQuadraticSelectionLimit <= kNumThreadsPerBlock);
+      const bool hasCandidate = static_cast<int>(threadIdx.x) < finalCount;
+      const uint64_t key =
+          hasCandidate ? MakeFinalCandidateKey(smemFinal.items.logits[threadIdx.x],
+                                               smemFinal.items.indices[threadIdx.x])
+                       : 0;
+      // Every candidate must be in registers before the shared storage is reused.
+      __syncthreads();
+      if (hasCandidate) smemFinal.candidateKeys[threadIdx.x] = key;
+      __syncthreads();
+      if (hasCandidate) {
         int outIndex = 0;
-        const float logit = smemFinal.items.logits[i];
-        const int sourceIndex = smemFinal.items.indices[i];
         for (int j = 0; j < finalCount; ++j) {
-          const float otherLogit = smemFinal.items.logits[j];
-          if (logit < otherLogit ||
-              (logit == otherLogit && sourceIndex > smemFinal.items.indices[j])) {
-            ++outIndex;
-          }
+          outIndex += smemFinal.candidateKeys[j] > key ? 1 : 0;
         }
         if (outIndex + baseIdx < topK) {
-          smemOutput[outIndex + baseIdx] = sourceIndex;
+          smemOutput[outIndex + baseIdx] = FinalCandidateSourceIndex(key);
         }
       }
       __syncthreads();
